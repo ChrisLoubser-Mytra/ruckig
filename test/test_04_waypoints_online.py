@@ -56,5 +56,5 @@ def test_waypoints_online():
     project_path = Path(__file__).parent.parent.absolute()
     file_path = os.path.join(project_path, 'test', 'test_trajectory.pdf')
     
-    Plotter.plot_trajectory(file_path, otg, inp, out_list, plot_jerk=False)
+    Plotter.plot_trajectory(file_path, otg, inp, out_list, plot_jerk=True)
 
