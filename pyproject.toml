@@ -38,6 +38,8 @@ packages = [
 [tool.poetry.dependencies]
 python = "^3.11"
 ruckig = "^0.14.0"
+matplotlib = "^3.9.2"
+tikzplotlib = "^0.10.1"
 
 [tool.poetry.group.dev.dependencies]
 yapf = "^0.40.1"
