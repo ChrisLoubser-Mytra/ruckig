@@ -23,6 +23,21 @@ Documentation = "https://docs.ruckig.com"
 Repository = "https://github.com/pantor/ruckig.git"
 Issues = "https://github.com/pantor/ruckig/issues"
 
+[tool.poetry]
+name = "ruckig_runner"
+version = "0.1.0"
+description = "Instantaneous Motion Generation for Robots and Machines."
+authors = ["Chris Loubser <loubser@mytra.ai>"]
+readme = "README.md"
+include = []
+package-mode = true
+packages = [
+    { include = "examples" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+ruckig = "^0.14.0"
 
 [build-system]
 requires = ["scikit-build-core", "pybind11"]
