@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import time
+from typing import Tuple
 
 from ruckig import InputParameter, OutputParameter, Result, Ruckig, Trajectory
 import numpy as np
@@ -14,8 +15,8 @@ import plotly.graph_objects as go
 
 @dataclass
 class MockMotorConfig:
-    velocity_jitter : float = 0.0005 # m/s
-    acceleration: float = 0.75 # m/s^2
+    velocity_jitter : float = 0.0 # m/s
+    acceleration: float | None = None # m/s^2
     time_step: float = 0.01 # seconds
     
 @dataclass
@@ -39,14 +40,14 @@ class MockMotor:
         self.velocity_history.append(self.velocity)
         self.acceleration_history.append(self.acceleration)
     
-    def process_command(self, target_velocity: float):
+    def process_command(self, target_velocity: float, target_acceleration: float):
         self.save_history()
         
         
         if target_velocity > self.velocity:
-            self.acceleration = self.mock_motor_config.acceleration
+            self.acceleration = self.mock_motor_config.acceleration if self.mock_motor_config.acceleration is not None else target_acceleration
         elif target_velocity < self.velocity:
-            self.acceleration = -self.mock_motor_config.acceleration
+            self.acceleration = -self.mock_motor_config.acceleration if self.mock_motor_config.acceleration is not None else target_acceleration
         else:
             self.acceleration = 0
         
@@ -58,28 +59,7 @@ class MockMotor:
         pass
         
 
-def test_waypoints_online():
-    # Create instances: the Ruckig OTG as well as input and output parameters
-    mock_motor = MockMotor()
-    otg = Ruckig(1, mock_motor.mock_motor_config.time_step)  # DoFs, control cycle rate
-    offline_trajectory = Trajectory(1)
-    inp : InputParameter = InputParameter(1)  # DoFs
-    out = OutputParameter(1, 10)  # DoFs, maximum number of intermediate waypoints for memory allocation
-    
-    def update_input():
-        # the data we read from moteus is the current position, velocity, and acceleration, not the target values
-        inp.current_position = [mock_motor.previous_position]
-        inp.current_velocity = [mock_motor.previous_velocity]
-        inp.current_acceleration = [mock_motor.previous_acceleration]
-
-    update_input()
-    inp.target_position = [2] # meters
-    inp.target_velocity = [0]
-    inp.target_acceleration = [0]
-
-    inp.max_velocity = [1] # m/s
-    inp.max_acceleration = [0.75 ] # m/s^2
-
+def generate_offline_trajectory(inp : InputParameter, timestep :float) -> Tuple[list[float], list[float], list[float]]:
     # Calculate entire trajectory at once
     offline_input : InputParameter = InputParameter(1)  # DoFs
     offline_input.current_position = inp.current_position
@@ -95,64 +75,76 @@ def test_waypoints_online():
     offline_result = offline_ruckig.calculate(offline_input, offline_trajectory)
     if offline_result == Result.ErrorInvalidInput:
         raise Exception('Invalid input!')
-    offline_positions = []
-    offline_velocities = []
-    offline_accelerations = []
-    for t in np.arange(0, offline_trajectory.duration, mock_motor.mock_motor_config.time_step):
+    offline_positions :list[float]= []
+    offline_velocities :list[float]= []
+    offline_accelerations :list[float]= []
+    for t in np.arange(0, offline_trajectory.duration, timestep):
         pos, vel, acc = offline_trajectory.at_time(t)
         offline_positions.append(pos[0])
         offline_velocities.append(vel[0])
         offline_accelerations.append(acc[0])
+        
+    return offline_positions, offline_velocities, offline_accelerations
+
+def test_waypoints_online():
+    # Create instances: the Ruckig OTG as well as input and output parameters
+    mock_motor = MockMotor()
+    otg = Ruckig(1, mock_motor.mock_motor_config.time_step)  # DoFs, control cycle rate
+    inp : InputParameter = InputParameter(1)  # DoFs
+    out = OutputParameter(1, 10)  # DoFs, maximum number of intermediate waypoints for memory allocation
     
+    def update_input():
+        # the data we read from moteus is the current position, velocity, and acceleration, not the target values
+        inp.current_position = [mock_motor.previous_position]
+        inp.current_velocity = [mock_motor.previous_velocity]
+        inp.current_acceleration = [mock_motor.previous_acceleration]
+    update_input()
     
+    # Set target
+    inp.target_position = [2] # meters
+    inp.target_velocity = [0]
+    inp.target_acceleration = [0]
+    target_position_tolerance = 0.001
+
+    # Set constraints
+    inp.max_velocity = [1] # m/s
+    inp.max_acceleration = [0.75 ] # m/s^2
+
+    offline_positions, offline_velocities, offline_accelerations = generate_offline_trajectory(inp, mock_motor.mock_motor_config.time_step)
 
     # Generate the trajectory within the control loop
     out_list = []
     res = Result.Working
     while res == Result.Working:
         res = otg.update(inp, out)
-
-        # if out.new_calculation:
-        #     print('Updated the trajectory:')
-        #     print(f'  Calculation duration: {out.calculation_duration:0.1f} [µs]')
-        #     print(f'  Trajectory duration: {out.trajectory.duration:0.4f} [s]')
-
-        print('\t'.join([f'{out.time:0.3f}'] + [f'{p:0.3f}' for p in out.new_position]+ [f'{p:0.3f}' for p in out.new_velocity]))
         out_list.append(copy(out))
-        new_position, new_velocity, new_acceleration = offline_trajectory.at_time(out.time)
         
-        # out.pass_to_input(inp)
-        
-        mock_motor.process_command(out.new_velocity[0])
+        mock_motor.process_command(out.new_velocity[0], out.new_acceleration[0])
         update_input()
-        print(f"Motor Position: {mock_motor.position} Velocity: {mock_motor.velocity} Acceleration: {mock_motor.acceleration}")
+        print(f"Motor Position: {mock_motor.position:.2f} Velocity: {mock_motor.velocity:.2f} Acceleration: {mock_motor.acceleration:.2f}")
+        
+        # Check if the current position is within the target position tolerance
+        position_error = abs(mock_motor.position - inp.target_position[0])
+        if position_error <= target_position_tolerance:
+            print(f"Position error: {position_error} is within tolerance")
+            break  # Exit the loop if within tolerance
 
     # Plot the trajectory
-    project_path = Path(__file__).parent.parent.absolute()
-    file_path = os.path.join(project_path, 'test', 'test_trajectory.pdf')
     
-    # Plotter.plot_trajectory(file_path, otg, inp, out_list, plot_jerk=False)
-    
-    # plot mock motor history using plotly
-    # - position_history: list = field(default_factory=list)
-    # - velocity_history: list = field(default_factory=list)
-    # - acceleration_history: list = field(default_factory=list)
-    
-
     def plot_mock_motor_history(mock_motor):
         fig = go.Figure()
 
         time_series = np.arange(0, len(mock_motor.position_history) * mock_motor.mock_motor_config.time_step, mock_motor.mock_motor_config.time_step)
         
-        fig.add_trace(go.Scatter(x=time_series, y=mock_motor.position_history, mode='lines', name='Position'))
-        fig.add_trace(go.Scatter(x=time_series, y=mock_motor.velocity_history, mode='lines', name='Velocity'))
-        fig.add_trace(go.Scatter(x=time_series, y=mock_motor.acceleration_history, mode='lines', name='Acceleration'))
+        fig.add_trace(go.Scatter(x=time_series, y=mock_motor.position_history, mode='lines+markers', name='Position'))
+        fig.add_trace(go.Scatter(x=time_series, y=mock_motor.velocity_history, mode='lines+markers', name='Velocity'))
+        fig.add_trace(go.Scatter(x=time_series, y=mock_motor.acceleration_history, mode='lines+markers', name='Acceleration'))
         
         offline_time_series = np.arange(0, len(offline_positions) * mock_motor.mock_motor_config.time_step, mock_motor.mock_motor_config.time_step)
         
-        fig.add_trace(go.Scatter(x=offline_time_series, y=offline_positions, mode='lines', name='Offline Position'))
-        fig.add_trace(go.Scatter(x=offline_time_series, y=offline_velocities, mode='lines', name='Offline Velocity'))
-        fig.add_trace(go.Scatter(x=offline_time_series, y=offline_accelerations, mode='lines', name='Offline Acceleration'))
+        fig.add_trace(go.Scatter(x=offline_time_series, y=offline_positions, mode='lines+markers', name='Offline Position'))
+        fig.add_trace(go.Scatter(x=offline_time_series, y=offline_velocities, mode='lines+markers', name='Offline Velocity'))
+        fig.add_trace(go.Scatter(x=offline_time_series, y=offline_accelerations, mode='lines+markers', name='Offline Acceleration'))
 
         fig.update_layout(
             title='Mock Motor History',
