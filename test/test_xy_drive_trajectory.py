@@ -1,5 +1,6 @@
 # This example shows the usage of intermediate waypoints. It will only work with Ruckig Pro or enabled cloud API (e.g. default when installed by pip / PyPI).
 
+from copy import copy
 from dataclasses import dataclass, field
 from typing import Tuple
 
@@ -37,7 +38,6 @@ class MockMotor:
     
     def process_command(self, target_velocity: float, target_acceleration: float):
         self.save_history()
-        
         
         if target_velocity > self.velocity:
             self.acceleration = self.mock_motor_config.acceleration if self.mock_motor_config.acceleration is not None else target_acceleration
